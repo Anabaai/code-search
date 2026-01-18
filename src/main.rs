@@ -1,9 +1,11 @@
 mod embeddings;
 
 mod mcp;
-mod scanner;
-mod search;
+pub mod scanner;
+pub mod search;
 mod store;
+mod text_index;
+
 
 use clap::{Parser, Subcommand};
 use mcp::run_mcp_server;

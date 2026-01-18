@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use crate::search::Searcher;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use notify::{Watcher, RecursiveMode, EventKind};
+use std::path::Path;
 
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
 pub struct SearchArgs {
@@ -142,8 +144,87 @@ impl ServerHandler for McpServer {
 
 pub async fn run_mcp_server() -> Result<()> {
     let server = McpServer::new();
-    let transport = rmcp::transport::io::stdio();
     
+    // Start Background Watcher
+    let searcher_clone = server.searcher.clone();
+    
+    // Channel for file events
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    
+    std::thread::spawn(move || {
+        let (wt_tx, wt_rx) = std::sync::mpsc::channel();
+        let watcher = notify::recommended_watcher(wt_tx);
+        
+        match watcher {
+            Ok(mut w) => {
+                if let Err(e) = w.watch(Path::new("."), RecursiveMode::Recursive) {
+                    eprintln!("Failed to start watcher: {}", e);
+                    return;
+                }
+                
+                // Keep watcher alive
+                for res in wt_rx {
+                    match res {
+                        Ok(event) => {
+                            if let Err(_) = tx.send(event) {
+                                break;
+                            }
+                        },
+                        Err(e) => eprintln!("Watch error: {:?}", e),
+                    }
+                }
+            },
+            Err(e) => eprintln!("Failed to create watcher: {}", e),
+        }
+    });
+
+    // Processor loop
+    tokio::spawn(async move {
+        // Simple debouncing map: Path -> Instant
+        // Actually for now just process.
+        // Parallel or Serial? Serial is safer for DB.
+        
+        while let Some(event) = rx.recv().await {
+            match event.kind {
+                EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
+                    for path in event.paths {
+                        // Filter ignore dirs partially (simple check)
+                        if path.components().any(|c| c.as_os_str() == "target" || c.as_os_str() == ".git" || c.as_os_str() == "node_modules") {
+                            continue;
+                        }
+                        
+                        // We need to initialize searcher if not exists? 
+                        // If user never searched, maybe we shouldn't index?
+                        // But "Watch Mode" implies active indexing.
+                        // Let's check lock.
+                        let mut searcher_guard = searcher_clone.lock().await;
+                        
+                        // Valid searcher needed.
+                        if searcher_guard.is_none() {
+                             // Initialize default?
+                             // Or skip. If I skip, I miss updates before first search.
+                             // Better to initialize.
+                             eprintln!("Initializing searcher for watch mode...");
+                             match Searcher::new() {
+                                 Ok(s) => *searcher_guard = Some(s),
+                                 Err(e) => {
+                                     eprintln!("Failed to init searcher: {}", e);
+                                     continue;
+                                 }
+                             }
+                        }
+                        
+                        if let Some(searcher) = searcher_guard.as_ref() {
+                            let _ = searcher.index_file(&path, ".", 60).await;
+                        }
+                    }
+                },
+                _ => {}
+            }
+        }
+    });
+    
+    let transport = rmcp::transport::io::stdio();
     server.serve(transport).await.context("MCP server failed")?;
     
     Ok(())

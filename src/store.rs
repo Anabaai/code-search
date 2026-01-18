@@ -229,7 +229,9 @@ impl VectorStore {
                 } else {
                     0.0
                 };
-                let score = 1.0 - dist;
+                // Assuming L2 distance on normalized vectors (range 0.0 to 2.0)
+                // Map to 0.0 - 1.0 similarity score
+                let score = (1.0 - (dist / 2.0)).max(0.0);
 
                 search_results.push(SearchResult {
                     file_path: file_paths.value(i).to_string(),

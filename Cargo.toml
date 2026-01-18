@@ -30,6 +30,8 @@ pathdiff = "0.2.3"
 arrow-schema = "53"
 rmcp = { version = "0.13.0", features = ["transport-io"] }
 schemars = "1"
+notify = "6.1"
+tantivy = "0.22.1"
 
 # Parallelism
 rayon = "1.10"
